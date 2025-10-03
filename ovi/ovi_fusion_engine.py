@@ -178,11 +178,15 @@ class OviFusionEngine:
             text_embeddings_audio_neg = text_embeddings[2]
 
             if is_i2v:              
+                if self.cpu_offload:
+                    self.vae_model_video.model = self.vae_model_video.model.to(self.device)
                 with torch.no_grad():
                     latents_images = self.vae_model_video.wrapped_encode(first_frame[:, :, None]).to(self.target_dtype).squeeze(0) # c 1 h w 
                 latents_images = latents_images.to(self.target_dtype)
                 video_latent_h, video_latent_w = latents_images.shape[2], latents_images.shape[3]
-
+                if self.cpu_offload:
+                    self.offload_to_cpu(self.vae_model_video.model)
+ 
             video_noise = torch.randn((self.video_latent_channel, self.video_latent_length, video_latent_h, video_latent_w), device=self.device, dtype=self.target_dtype, generator=torch.Generator(device=self.device).manual_seed(seed))  # c, f, h, w
             audio_noise = torch.randn((self.audio_latent_length, self.audio_latent_channel), device=self.device, dtype=self.target_dtype, generator=torch.Generator(device=self.device).manual_seed(seed))  # 1, l c -> l, c
             
