@@ -6,6 +6,7 @@ from diffusers import FluxPipeline
 import tempfile
 from ovi.utils.io_utils import save_video
 from ovi.utils.processing_utils import clean_text, scale_hw_to_area_divisible
+import requests
 
 # ----------------------------
 # Parse CLI Args
@@ -38,6 +39,12 @@ if use_image_gen:
 print("loaded model")
 
 
+interrupted = False
+
+def interrupt():
+    global interrupted
+    interrupted = True
+
 def generate_video(
     text_prompt,
     image,
@@ -58,6 +65,13 @@ def generate_video(
         if image is not None:
             image_path = image
 
+        global interrupted
+        interrupted = False
+
+        requests.post("http://authproxy:7860/ovi/join", timeout=600)
+        def int_check():
+            return interrupted
+
         generated_video, generated_audio, _ = ovi_engine.generate(
             text_prompt=text_prompt,
             image_path=image_path,
@@ -71,6 +85,7 @@ def generate_video(
             slg_layer=slg_layer,
             video_negative_prompt=video_negative_prompt,
             audio_negative_prompt=audio_negative_prompt,
+            int_check=int_check
         )
 
         tmpfile = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
@@ -81,6 +96,8 @@ def generate_video(
     except Exception as e:
         print(f"Error during video generation: {e}")
         return None
+    finally:
+        requests.post("http://authproxy:7860/ovi/leave", timeout=5)
 
 
 def generate_image(text_prompt, image_seed, image_height, image_width):
@@ -153,7 +170,7 @@ with gr.Blocks() as demo:
                     choices=["unipc", "euler", "dpm++"], value="unipc", label="Solver Name"
                 )
                 sample_steps = gr.Number(
-                    value=50,
+                    value=30,
                     label="Sample Steps",
                     precision=0,
                     minimum=20,
@@ -167,6 +184,7 @@ with gr.Blocks() as demo:
                 audio_negative_prompt = gr.Textbox(label="Audio Negative Prompt", placeholder="Things to avoid in audio")
 
                 run_btn = gr.Button("Generate Video 🚀")
+                interrupt_btn = gr.Button("Interrupt")
 
         with gr.Column():
             output_path = gr.Video(label="Generated Video")
@@ -188,6 +206,7 @@ with gr.Blocks() as demo:
         ],
         outputs=[output_path],
     )
+    interrupt_btn.click(fn=interrupt)
 
 if __name__ == "__main__":
     demo.launch(share=True)

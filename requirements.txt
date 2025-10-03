@@ -26,3 +26,4 @@ gradio
 open-clip-torch
 protobuf
 sentencepiece
+einops

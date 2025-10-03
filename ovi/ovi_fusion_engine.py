@@ -18,6 +18,7 @@ from ovi.utils.fm_solvers import (FlowDPMSolverMultistepScheduler,
 import traceback
 from omegaconf import OmegaConf
 from ovi.utils.processing_utils import clean_text, preprocess_image_tensor, snap_hw_to_multiple_of_32, scale_hw_to_area_divisible
+import requests
 
 DEFAULT_CONFIG = OmegaConf.load('ovi/configs/inference/inference_fusion.yaml')
 
@@ -95,7 +96,8 @@ class OviFusionEngine:
                     audio_guidance_scale=4.0,
                     slg_layer=9,
                     video_negative_prompt="",
-                    audio_negative_prompt=""
+                    audio_negative_prompt="",
+                    int_check=None
                 ):
 
         params = {
@@ -191,6 +193,8 @@ class OviFusionEngine:
             
             # Sampling loop
             if self.cpu_offload:
+                self.offload_to_cpu(self.vae_model_video.model)
+                self.offload_to_cpu(self.vae_model_audio)
                 self.model = self.model.to(self.device)
             with torch.amp.autocast('cuda', enabled=self.target_dtype != torch.float32, dtype=self.target_dtype):
                 for i, (t_v, t_a) in tqdm(enumerate(zip(timesteps_video, timesteps_audio))):
@@ -244,9 +248,19 @@ class OviFusionEngine:
                     audio_noise = scheduler_audio.step(
                         pred_audio_guided.unsqueeze(0), t_a, audio_noise.unsqueeze(0), return_dict=False
                     )[0].squeeze(0)
+                    progress = {"value": i + 1, "max": len(timesteps_video), "prompt_id": "task", "queue": 1}
+                    requests.post("http://authproxy:7860/cui/progress", json=progress, timeout=2)
+                    if int_check is not None and int_check():
+                        if self.cpu_offload:
+                            self.offload_to_cpu(self.model)
+                            self.offload_to_cpu(self.vae_model_video.model)
+                            self.offload_to_cpu(self.vae_model_audio)
+                        raise Exception("interrupted")
 
                 if self.cpu_offload:
                     self.offload_to_cpu(self.model)
+                    self.vae_model_video.model = self.vae_model_video.model.to(self.device)
+                    self.vae_model_audio = self.vae_model_audio.to(self.device)
                 
                 if is_i2v:
                     video_noise[:, :1] = latents_images
@@ -261,6 +275,9 @@ class OviFusionEngine:
                 generated_video = self.vae_model_video.wrapped_decode(video_latents_for_vae)
                 generated_video = generated_video.squeeze(0).cpu().float().numpy()  # c, f, h, w
             
+                if self.cpu_offload:
+                    self.offload_to_cpu(self.vae_model_video.model)
+                    self.offload_to_cpu(self.vae_model_audio)
             return generated_video, generated_audio, image
 
 
