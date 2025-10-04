@@ -15,35 +15,57 @@ parser = argparse.ArgumentParser(description="Ovi Joint Video + Audio Gradio Dem
 parser.add_argument(
     "--use_image_gen",
     action="store_true",
-    help="Enable image generation UI with FluxPipeline"
+    help="Enable image generation UI with FluxPipeline",
 )
 parser.add_argument(
     "--cpu_offload",
     action="store_true",
-    help="Enable CPU offload for both OviFusionEngine and FluxPipeline"
+    help="Enable CPU offload for both OviFusionEngine and FluxPipeline",
 )
 args = parser.parse_args()
+
+
+def join():
+    requests.post("http://authproxy:7860/ovi/join", timeout=600)
+
+
+def leave():
+    requests.post("http://authproxy:7860/ovi/leave", timeout=5)
 
 
 # Initialize OviFusionEngine
 enable_cpu_offload = args.cpu_offload or args.use_image_gen
 use_image_gen = args.use_image_gen
 print(f"loading model... {enable_cpu_offload=}, {use_image_gen=} for gradio demo")
-DEFAULT_CONFIG['cpu_offload'] = enable_cpu_offload # always use cpu offload if image generation is enabled
-DEFAULT_CONFIG['mode'] = "t2v"  # hardcoded since it is always cpu offloaded
+DEFAULT_CONFIG["cpu_offload"] = (
+    enable_cpu_offload  # always use cpu offload if image generation is enabled
+)
+DEFAULT_CONFIG["mode"] = "t2v"  # hardcoded since it is always cpu offloaded
+join()
+requests.post("http://stablediff-cuda:7860/sdapi/v1/unload-checkpoint", timeout=5)
+requests.post(
+    "http://comfyui:8188/free",
+    json={"unload_models": "true", "free_memory": "true"},
+    timeout=5,
+)
 ovi_engine = OviFusionEngine()
 flux_model = None
 if use_image_gen:
-    flux_model = FluxPipeline.from_pretrained("black-forest-labs/FLUX.1-Krea-dev", torch_dtype=torch.bfloat16)
-    flux_model.enable_model_cpu_offload() #save some VRAM by offloading the model to CPU. Remove this if you have enough GPU VRAM
+    flux_model = FluxPipeline.from_pretrained(
+        "black-forest-labs/FLUX.1-Krea-dev", torch_dtype=torch.bfloat16
+    )
+    flux_model.enable_model_cpu_offload()  # save some VRAM by offloading the model to CPU. Remove this if you have enough GPU VRAM
 print("loaded model")
+leave()
 
 
 interrupted = False
 
+
 def interrupt():
     global interrupted
     interrupted = True
+
 
 def generate_video(
     text_prompt,
@@ -68,7 +90,8 @@ def generate_video(
         global interrupted
         interrupted = False
 
-        requests.post("http://authproxy:7860/ovi/join", timeout=600)
+        join()
+
         def int_check():
             return interrupted
 
@@ -85,34 +108,40 @@ def generate_video(
             slg_layer=slg_layer,
             video_negative_prompt=video_negative_prompt,
             audio_negative_prompt=audio_negative_prompt,
-            int_check=int_check
+            int_check=int_check,
         )
 
         tmpfile = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
         output_path = tmpfile.name
-        save_video(output_path, generated_video, generated_audio, fps=24, sample_rate=16000)
+        save_video(
+            output_path, generated_video, generated_audio, fps=24, sample_rate=16000
+        )
 
         return output_path
     except Exception as e:
         print(f"Error during video generation: {e}")
         return None
     finally:
-        requests.post("http://authproxy:7860/ovi/leave", timeout=5)
+        leave()
 
 
 def generate_image(text_prompt, image_seed, image_height, image_width):
     if flux_model is None:
         return None
     text_prompt = clean_text(text_prompt)
-    print(f"Generating image with prompt='{text_prompt}', seed={image_seed}, size=({image_height},{image_width})")
+    print(
+        f"Generating image with prompt='{text_prompt}', seed={image_seed}, size=({image_height},{image_width})"
+    )
 
-    image_h, image_w = scale_hw_to_area_divisible(image_height, image_width, area=1024 * 1024)
+    image_h, image_w = scale_hw_to_area_divisible(
+        image_height, image_width, area=1024 * 1024
+    )
     image = flux_model(
         text_prompt,
         height=image_h,
         width=image_w,
         guidance_scale=4.5,
-        generator=torch.Generator().manual_seed(int(image_seed))
+        generator=torch.Generator().manual_seed(int(image_seed)),
     ).images[0]
 
     tmpfile = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
@@ -144,44 +173,90 @@ with gr.Blocks() as demo:
         """
     )
 
-
     with gr.Row():
         with gr.Column():
             # Image section
-            image = gr.Image(type="filepath", label="First Frame Image (upload or generate)")
+            image = gr.Image(
+                type="filepath", label="First Frame Image (upload or generate)"
+            )
 
             if args.use_image_gen:
                 with gr.Accordion("🖼️ Image Generation Options", visible=True):
-                    image_text_prompt = gr.Textbox(label="Image Prompt", placeholder="Describe the image you want to generate...")
-                    image_seed = gr.Number(minimum=0, maximum=100000, value=42, label="Image Seed")
-                    image_height = gr.Number(minimum=128, maximum=1280, value=720, step=32, label="Image Height")
-                    image_width = gr.Number(minimum=128, maximum=1280, value=1280, step=32, label="Image Width")
+                    image_text_prompt = gr.Textbox(
+                        label="Image Prompt",
+                        placeholder="Describe the image you want to generate...",
+                    )
+                    image_seed = gr.Number(
+                        minimum=0, maximum=100000, value=42, label="Image Seed"
+                    )
+                    image_height = gr.Number(
+                        minimum=128,
+                        maximum=1280,
+                        value=720,
+                        step=32,
+                        label="Image Height",
+                    )
+                    image_width = gr.Number(
+                        minimum=128,
+                        maximum=1280,
+                        value=1280,
+                        step=32,
+                        label="Image Width",
+                    )
                     gen_img_btn = gr.Button("Generate Image 🎨")
             else:
                 gen_img_btn = None
 
             with gr.Accordion("🎬 Video Generation Options", open=True):
-                video_text_prompt = gr.Textbox(label="Video Prompt", placeholder="Describe your video...")
-                video_height = gr.Number(minimum=128, maximum=1280, value=512, step=32, label="Video Height")
-                video_width = gr.Number(minimum=128, maximum=1280, value=992, step=32, label="Video Width")
+                video_text_prompt = gr.Textbox(
+                    label="Video Prompt", placeholder="Describe your video..."
+                )
+                video_height = gr.Number(
+                    minimum=128, maximum=1280, value=512, step=32, label="Video Height"
+                )
+                video_width = gr.Number(
+                    minimum=128, maximum=1280, value=992, step=32, label="Video Width"
+                )
 
-                video_seed = gr.Number(minimum=0, maximum=100000, value=100, label="Video Seed")
+                video_seed = gr.Number(
+                    minimum=0, maximum=100000, value=100, label="Video Seed"
+                )
                 solver_name = gr.Dropdown(
-                    choices=["unipc", "euler", "dpm++"], value="unipc", label="Solver Name"
+                    choices=["unipc", "euler", "dpm++"],
+                    value="unipc",
+                    label="Solver Name",
                 )
                 sample_steps = gr.Number(
-                    value=30,
-                    label="Sample Steps",
-                    precision=0,
-                    minimum=20,
-                    maximum=100
+                    value=30, label="Sample Steps", precision=0, minimum=20, maximum=100
                 )
-                shift = gr.Slider(minimum=0.0, maximum=20.0, value=5.0, step=1.0, label="Shift")
-                video_guidance_scale = gr.Slider(minimum=0.0, maximum=10.0, value=4.0, step=0.5, label="Video Guidance Scale")
-                audio_guidance_scale = gr.Slider(minimum=0.0, maximum=10.0, value=3.0, step=0.5, label="Audio Guidance Scale")
-                slg_layer = gr.Number(minimum=-1, maximum=30, value=11, step=1, label="SLG Layer")
-                video_negative_prompt = gr.Textbox(label="Video Negative Prompt", placeholder="Things to avoid in video")
-                audio_negative_prompt = gr.Textbox(label="Audio Negative Prompt", placeholder="Things to avoid in audio")
+                shift = gr.Slider(
+                    minimum=0.0, maximum=20.0, value=5.0, step=1.0, label="Shift"
+                )
+                video_guidance_scale = gr.Slider(
+                    minimum=0.0,
+                    maximum=10.0,
+                    value=4.0,
+                    step=0.5,
+                    label="Video Guidance Scale",
+                )
+                audio_guidance_scale = gr.Slider(
+                    minimum=0.0,
+                    maximum=10.0,
+                    value=3.0,
+                    step=0.5,
+                    label="Audio Guidance Scale",
+                )
+                slg_layer = gr.Number(
+                    minimum=-1, maximum=30, value=11, step=1, label="SLG Layer"
+                )
+                video_negative_prompt = gr.Textbox(
+                    label="Video Negative Prompt",
+                    placeholder="Things to avoid in video",
+                )
+                audio_negative_prompt = gr.Textbox(
+                    label="Audio Negative Prompt",
+                    placeholder="Things to avoid in audio",
+                )
 
                 run_btn = gr.Button("Generate Video 🚀")
                 interrupt_btn = gr.Button("Interrupt")
@@ -200,9 +275,19 @@ with gr.Blocks() as demo:
     run_btn.click(
         fn=generate_video,
         inputs=[
-            video_text_prompt, image, video_height, video_width, video_seed, solver_name,
-            sample_steps, shift, video_guidance_scale, audio_guidance_scale,
-            slg_layer, video_negative_prompt, audio_negative_prompt,
+            video_text_prompt,
+            image,
+            video_height,
+            video_width,
+            video_seed,
+            solver_name,
+            sample_steps,
+            shift,
+            video_guidance_scale,
+            audio_guidance_scale,
+            slg_layer,
+            video_negative_prompt,
+            audio_negative_prompt,
         ],
         outputs=[output_path],
     )
