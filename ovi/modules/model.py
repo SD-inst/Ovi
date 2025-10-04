@@ -501,7 +501,6 @@ class Head(nn.Module):
         return x
 
 
-
 class MLPProj(torch.nn.Module):
 
     def __init__(self, in_dim, out_dim):

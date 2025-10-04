@@ -69,7 +69,6 @@ class OviFusionEngine:
         if not os.path.exists(checkpoint_path):
             raise RuntimeError(f"No fusion checkpoint found in {config.ckpt_dir}")
 
-
         load_fusion_checkpoint(model, checkpoint_path=checkpoint_path, from_meta=meta_init)
 
         if meta_init:
@@ -95,21 +94,22 @@ class OviFusionEngine:
         logging.info(f"OVI Fusion Engine initialized, cpu_offload={self.cpu_offload}. GPU VRAM allocated: {torch.cuda.memory_allocated(device)/1e9:.2f} GB, reserved: {torch.cuda.memory_reserved(device)/1e9:.2f} GB")
 
     @torch.inference_mode()
-    def generate(self,
-                    text_prompt, 
-                    image_path=None,
-                    video_frame_height_width=None,
-                    seed=100,
-                    solver_name="unipc",
-                    sample_steps=50,
-                    shift=5.0,
-                    video_guidance_scale=5.0,
-                    audio_guidance_scale=4.0,
-                    slg_layer=9,
-                    video_negative_prompt="",
-                    audio_negative_prompt="",
-                    int_check=None
-                ):
+    def generate(
+        self,
+        text_prompt,
+        image_path=None,
+        video_frame_height_width=None,
+        seed=100,
+        solver_name="unipc",
+        sample_steps=50,
+        shift=5.0,
+        video_guidance_scale=5.0,
+        audio_guidance_scale=4.0,
+        slg_layer=9,
+        video_negative_prompt="",
+        audio_negative_prompt="",
+        int_check=None,
+    ):
 
         params = {
             "Text Prompt": text_prompt,
@@ -172,7 +172,6 @@ class OviFusionEngine:
                 else:
                     print(f"Pure T2V mode: calculated video latent size: {video_latent_h} x {video_latent_w}")
 
-            
             if self.cpu_offload:
                 self.text_model.model = self.text_model.model.to(self.device)
             text_embeddings = self.text_model([text_prompt, video_negative_prompt, audio_negative_prompt], self.text_model.device)
@@ -188,24 +187,24 @@ class OviFusionEngine:
             text_embeddings_video_neg = text_embeddings[1]
             text_embeddings_audio_neg = text_embeddings[2]
 
-            if is_i2v:              
+            if is_i2v:
                 if self.cpu_offload:
                     self.vae_model_video.model = self.vae_model_video.model.to(self.device)
                 with torch.no_grad():
-                    latents_images = self.vae_model_video.wrapped_encode(first_frame[:, :, None]).to(self.target_dtype).squeeze(0) # c 1 h w 
+                    latents_images = self.vae_model_video.wrapped_encode(first_frame[:, :, None]).to(self.target_dtype).squeeze(0) # c 1 h w
                 latents_images = latents_images.to(self.target_dtype)
                 video_latent_h, video_latent_w = latents_images.shape[2], latents_images.shape[3]
                 if self.cpu_offload:
                     self.offload_to_cpu(self.vae_model_video.model)
- 
+
             video_noise = torch.randn((self.video_latent_channel, self.video_latent_length, video_latent_h, video_latent_w), device=self.device, dtype=self.target_dtype, generator=torch.Generator(device=self.device).manual_seed(seed))  # c, f, h, w
             audio_noise = torch.randn((self.audio_latent_length, self.audio_latent_channel), device=self.device, dtype=self.target_dtype, generator=torch.Generator(device=self.device).manual_seed(seed))  # 1, l c -> l, c
-            
+
             # Calculate sequence lengths from actual latents
             max_seq_len_audio = audio_noise.shape[0]  # L dimension from latents_audios shape [1, L, D]
             _patch_size_h, _patch_size_w = self.model.video_model.patch_size[1], self.model.video_model.patch_size[2]
             max_seq_len_video = video_noise.shape[1] * video_noise.shape[2] * video_noise.shape[3] // (_patch_size_h*_patch_size_w) # f * h * w from [1, c, f, h, w]
-            
+
             # Sampling loop
             if self.cpu_offload:
                 self.offload_to_cpu(self.vae_model_video.model)
@@ -233,8 +232,8 @@ class OviFusionEngine:
                         t=timestep_input,
                         **pos_forward_args
                     )
-                    
-                    # Negative (unconditional) forward pass  
+
+                    # Negative (unconditional) forward pass
                     neg_forward_args = {
                         'audio_context': [text_embeddings_audio_neg],
                         'vid_context': [text_embeddings_video_neg],
@@ -243,7 +242,7 @@ class OviFusionEngine:
                         'first_frame_is_clean': is_i2v,
                         'slg_layer': slg_layer
                     }
-                    
+
                     pred_vid_neg, pred_audio_neg = self.model(
                         vid=[video_noise],
                         audio=[audio_noise],
@@ -276,7 +275,7 @@ class OviFusionEngine:
                     self.offload_to_cpu(self.model)
                     self.vae_model_video.model = self.vae_model_video.model.to(self.device)
                     self.vae_model_audio = self.vae_model_audio.to(self.device)
-                
+
                 if is_i2v:
                     video_noise[:, :1] = latents_images
 
@@ -284,22 +283,21 @@ class OviFusionEngine:
                 audio_latents_for_vae = audio_noise.unsqueeze(0).transpose(1, 2)  # 1, c, l
                 generated_audio = self.vae_model_audio.wrapped_decode(audio_latents_for_vae)
                 generated_audio = generated_audio.squeeze().cpu().float().numpy()
-                
-                # Decode video  
+
+                # Decode video
                 video_latents_for_vae = video_noise.unsqueeze(0)  # 1, c, f, h, w
                 generated_video = self.vae_model_video.wrapped_decode(video_latents_for_vae)
                 generated_video = generated_video.squeeze(0).cpu().float().numpy()  # c, f, h, w
-            
+
                 if self.cpu_offload:
                     self.offload_to_cpu(self.vae_model_video.model)
                     self.offload_to_cpu(self.vae_model_audio)
             return generated_video, generated_audio, image
 
-
         except Exception as e:
             logging.error(traceback.format_exc())
             return None
-            
+
     def offload_to_cpu(self, model):
         model = model.cpu()
         torch.cuda.synchronize()
@@ -329,7 +327,7 @@ class OviFusionEngine:
                 sample_scheduler,
                 device=device,
                 sigmas=sampling_sigmas)
-            
+
         elif solver_name == 'euler':
             sample_scheduler = FlowMatchEulerDiscreteScheduler(
                 shift=shift
@@ -339,8 +337,8 @@ class OviFusionEngine:
                 sampling_steps,
                 device=device,
             )
-        
+
         else:
             raise NotImplementedError("Unsupported solver.")
-        
+
         return sample_scheduler, timesteps
