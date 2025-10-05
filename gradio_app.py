@@ -1,3 +1,4 @@
+import multiprocessing
 import gradio as gr
 import torch
 import argparse
@@ -27,11 +28,6 @@ parser.add_argument(
     action="store_true",
     help="Enable 8 bit quantization of the fusion model",
 )
-parser.add_argument(
-    "--fp8",
-    action="store_true",
-    help="Enable 8 bit quantization of the fusion model",
-)
 args = parser.parse_args()
 
 
@@ -52,15 +48,7 @@ DEFAULT_CONFIG["cpu_offload"] = (
     enable_cpu_offload  # always use cpu offload if image generation is enabled
 )
 DEFAULT_CONFIG["mode"] = "t2v"  # hardcoded since it is always cpu offloaded
-join()
-requests.post("http://stablediff-cuda:7860/sdapi/v1/unload-checkpoint", timeout=5)
-requests.post(
-    "http://comfyui:8188/free",
-    json={"unload_models": "true", "free_memory": "true"},
-    timeout=5,
-)
 DEFAULT_CONFIG["fp8"] = fp8
-ovi_engine = OviFusionEngine()
 flux_model = None
 if fp8:
     assert not use_image_gen, "Image generation with FluxPipeline is not supported with fp8 quantization. This is because if you are unable to run the bf16 model, you likely cannot run image gen model"
@@ -70,8 +58,6 @@ if use_image_gen:
         "black-forest-labs/FLUX.1-Krea-dev", torch_dtype=torch.bfloat16
     )
     flux_model.enable_model_cpu_offload()  # save some VRAM by offloading the model to CPU. Remove this if you have enough GPU VRAM
-print("loaded model")
-leave()
 
 
 interrupted = False
@@ -82,7 +68,13 @@ def interrupt():
     interrupted = True
 
 
-def generate_video(
+def generate_video(*args, **kwargs):
+    cudapool = multiprocessing.get_context("spawn").Pool(1)
+    result = cudapool.apply(do_generate_video, args, kwargs)
+    cudapool.terminate()
+    return result
+
+def do_generate_video(
     text_prompt,
     image,
     video_frame_height,
@@ -110,6 +102,7 @@ def generate_video(
         def int_check():
             return interrupted
 
+        ovi_engine = OviFusionEngine()
         generated_video, generated_audio, _ = ovi_engine.generate(
             text_prompt=text_prompt,
             image_path=image_path,

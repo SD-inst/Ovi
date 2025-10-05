@@ -479,7 +479,6 @@ class T5EncoderModel:
         checkpoint_path=None,
         tokenizer_path=None,
         shard_fn=None,
-        cpu_offload=False,
     ):
         self.text_len = text_len
         self.dtype = dtype
@@ -492,13 +491,13 @@ class T5EncoderModel:
             encoder_only=True,
             return_tokenizer=False,
             dtype=dtype,
-            device=device if not cpu_offload else "cpu").eval().requires_grad_(False)
+            device=device).eval().requires_grad_(False)
         logging.info(f'loading {checkpoint_path}')
         model.load_state_dict(torch.load(checkpoint_path, map_location='cpu'))
         self.model = model
         if shard_fn is not None:
             self.model = shard_fn(self.model, sync_module_states=False)
-        elif not cpu_offload:
+        else:
             self.model.to(self.device)
         # init tokenizer
         self.tokenizer = HuggingfaceTokenizer(

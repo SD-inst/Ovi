@@ -57,11 +57,9 @@ class OviFusionEngine:
         self.vae_model_audio = vae_model_audio.bfloat16()
 
         # Load T5 text model
-        self.text_model = init_text_model(config.ckpt_dir, rank=device, cpu_offload=self.cpu_offload)
+        self.text_model = init_text_model(config.ckpt_dir, rank=device)
         if config.get("shard_text_model", False):
             raise NotImplementedError("Sharding text model is not implemented yet.")
-        if self.cpu_offload:
-            self.offload_to_cpu(self.text_model.model)
 
         # Find fusion ckpt in the same dir used by other components
         checkpoint_path = os.path.join(
