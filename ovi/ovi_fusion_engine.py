@@ -34,6 +34,10 @@ class OviFusionEngine:
 
         model, video_config, audio_config = init_fusion_score_model_ovi(rank=device, meta_init=meta_init)
 
+        fp8 = config.get("fp8", False)
+        if fp8:
+            assert not config.get("mode") == "t2i2v", "Image generation with FluxPipeline is not supported with fp8 quantization. This is because if you are unable to run the bf16 model, you likely cannot run image gen model"
+
         if not meta_init:
             if not fp8:
                 model = model.to(dtype=target_dtype)
@@ -80,6 +84,7 @@ class OviFusionEngine:
 
         ## Load t2i as part of pipeline
         self.image_model = None
+        
         if config.get("mode") == "t2i2v":
             logging.info(f"Loading Flux Krea for first frame generation...")
             self.image_model = FluxPipeline.from_pretrained("black-forest-labs/FLUX.1-Krea-dev", torch_dtype=torch.bfloat16)
@@ -189,7 +194,9 @@ class OviFusionEngine:
 
             if is_i2v:
                 if self.cpu_offload:
-                    self.vae_model_video.model = self.vae_model_video.model.to(self.device)
+                    self.vae_model_video.model = self.vae_model_video.model.to(
+                        self.device
+                    )
                 with torch.no_grad():
                     latents_images = self.vae_model_video.wrapped_encode(first_frame[:, :, None]).to(self.target_dtype).squeeze(0) # c 1 h w
                 latents_images = latents_images.to(self.target_dtype)
@@ -273,7 +280,9 @@ class OviFusionEngine:
 
                 if self.cpu_offload:
                     self.offload_to_cpu(self.model)
-                    self.vae_model_video.model = self.vae_model_video.model.to(self.device)
+                    self.vae_model_video.model = self.vae_model_video.model.to(
+                        self.device
+                    )
                     self.vae_model_audio = self.vae_model_audio.to(self.device)
 
                 if is_i2v:
@@ -288,7 +297,6 @@ class OviFusionEngine:
                 video_latents_for_vae = video_noise.unsqueeze(0)  # 1, c, f, h, w
                 generated_video = self.vae_model_video.wrapped_decode(video_latents_for_vae)
                 generated_video = generated_video.squeeze(0).cpu().float().numpy()  # c, f, h, w
-
                 if self.cpu_offload:
                     self.offload_to_cpu(self.vae_model_video.model)
                     self.offload_to_cpu(self.vae_model_audio)

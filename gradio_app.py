@@ -27,6 +27,11 @@ parser.add_argument(
     action="store_true",
     help="Enable 8 bit quantization of the fusion model",
 )
+parser.add_argument(
+    "--fp8",
+    action="store_true",
+    help="Enable 8 bit quantization of the fusion model",
+)
 args = parser.parse_args()
 
 
@@ -54,8 +59,12 @@ requests.post(
     json={"unload_models": "true", "free_memory": "true"},
     timeout=5,
 )
-ovi_engine = OviFusionEngine(fp8=fp8)
+DEFAULT_CONFIG["fp8"] = fp8
+ovi_engine = OviFusionEngine()
 flux_model = None
+if fp8:
+    assert not use_image_gen, "Image generation with FluxPipeline is not supported with fp8 quantization. This is because if you are unable to run the bf16 model, you likely cannot run image gen model"
+    
 if use_image_gen:
     flux_model = FluxPipeline.from_pretrained(
         "black-forest-labs/FLUX.1-Krea-dev", torch_dtype=torch.bfloat16
